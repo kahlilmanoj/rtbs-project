@@ -22,7 +22,19 @@ export default function LiveTrackingPage() {
     async function fetchData() {
       try {
         const busSnap = await getDoc(doc(db, 'buses', busId));
-        if (busSnap.exists()) setBusData({ id: busSnap.id, ...busSnap.data() });
+        if (busSnap.exists()) {
+          const data = { id: busSnap.id, ...busSnap.data() };
+          setBusData(data);
+          // Record this trip in passenger history (localStorage)
+          try {
+            const prev = JSON.parse(localStorage.getItem('rtbs_past_trips') || '[]');
+            const entry = { busNumber: data.busNumber, routeId: data.routeId, fare: data.fare, timestamp: new Date().toISOString() };
+            // Avoid duplicate if same bus tracked within 5 minutes
+            const recent = prev[0];
+            const tooSoon = recent && recent.busNumber === data.busNumber && (Date.now() - new Date(recent.timestamp).getTime()) < 5 * 60 * 1000;
+            if (!tooSoon) localStorage.setItem('rtbs_past_trips', JSON.stringify([entry, ...prev].slice(0, 20)));
+          } catch { /* ignore storage errors */ }
+        }
         const route = await getBusRoute(busId);
         setRouteData(route);
       } catch (err) {

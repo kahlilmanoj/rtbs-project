@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import { GoogleMap, InfoWindow, useJsApiLoader } from '@react-google-maps/api';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
+import { ROUTE_SHAPING_POINTS } from '../data/routeShapingPoints';
 
 const DEFAULT_CENTER = { lat: 8.5241, lng: 76.9366 };
 const MAP_CONTAINER  = { width: '100%', height: '100%' };
@@ -236,68 +237,72 @@ function MapContent({ busLocation, routeStops, routeId, encodedPolyline, routePa
 
     if (!routeStops?.length || routeStops.length < 2) return;
 
-    // ── Slow path: route each consecutive stop-pair independently ────────────
-    // Routing stop-to-stop (2 points per call) gives more accurate road paths
-    // than sending all stops as waypoints in a single request.
+    // ── Slow path: single Directions API call for the full route ─────────────
+    // One coherent request avoids the U-turns and loops that segment-by-segment
+    // routing produces when adjacent stops are close together or on one-way roads.
+    // Shaping points (via: waypoints) are still injected for known problem segments.
     const svc = new G.DirectionsService();
+    const routeShaping = ROUTE_SHAPING_POINTS[routeId] ?? {};
+    const toLL = (s) => new G.LatLng(Number(s.lat), Number(s.lng));
 
-    async function buildSegmentedPath() {
-      const combinedPath = [];
+    const origin      = routeStops[0];
+    const destination = routeStops[routeStops.length - 1];
 
-      for (let i = 0; i < routeStops.length - 1; i++) {
+    // Build waypoint list: real stops (stopover:true) + shaping points (stopover:false)
+    const waypoints = [];
+    for (let i = 1; i < routeStops.length - 1; i++) {
+      // Shaping points between stop[i-1] and stop[i]
+      (routeShaping[`${i - 1}→${i}`] ?? []).forEach((pt) =>
+        waypoints.push({ location: new G.LatLng(pt.lat, pt.lng), stopover: false }),
+      );
+      waypoints.push({ location: toLL(routeStops[i]), stopover: true });
+    }
+    // Shaping points between last intermediate stop and destination
+    (routeShaping[`${routeStops.length - 2}→${routeStops.length - 1}`] ?? []).forEach((pt) =>
+      waypoints.push({ location: new G.LatLng(pt.lat, pt.lng), stopover: false }),
+    );
+
+    svc.route(
+      {
+        origin:            toLL(origin),
+        destination:       toLL(destination),
+        waypoints,
+        optimizeWaypoints: false,
+        travelMode:        G.TravelMode.DRIVING,
+      },
+      (result, status) => {
         if (cancelled) return;
 
-        const segPath = await new Promise((resolve) => {
-          svc.route(
-            {
-              origin:      { lat: Number(routeStops[i].lat),     lng: Number(routeStops[i].lng) },
-              destination: { lat: Number(routeStops[i + 1].lat), lng: Number(routeStops[i + 1].lng) },
-              travelMode:  G.TravelMode.DRIVING,
-            },
-            (result, status) => {
-              if (status === G.DirectionsStatus.OK) {
-                const pts = [];
-                result.routes[0].legs[0].steps.forEach((step) =>
-                  step.path.forEach((pt) => pts.push(pt)),
-                );
-                resolve(pts);
-              } else {
-                // Fallback: straight line between these two stops
-                resolve([
-                  new G.LatLng(Number(routeStops[i].lat),     Number(routeStops[i].lng)),
-                  new G.LatLng(Number(routeStops[i + 1].lat), Number(routeStops[i + 1].lng)),
-                ]);
-              }
-            },
+        let path;
+        if (status === G.DirectionsStatus.OK) {
+          path = [];
+          result.routes[0].legs.forEach((leg) =>
+            leg.steps.forEach((step) =>
+              step.path.forEach((pt) => path.push(pt)),
+            ),
           );
-        });
-
-        segPath.forEach((pt) => combinedPath.push(pt));
-
-        // Small delay between calls to stay within rate limits
-        if (i < routeStops.length - 2) {
-          await new Promise((r) => setTimeout(r, 80));
+          setRouteErr('');
+        } else {
+          // Fallback: straight lines between stops (still usable for demo)
+          path = routeStops.map(toLL);
+          setRouteErr(`Route unavailable (${status}) — showing approximate path`);
         }
-      }
 
-      if (cancelled || combinedPath.length === 0) return;
+        fullRoadPathRef.current = path;
+        remainPolyRef.current?.setPath(path);
+        coveredBorderRef.current?.setPath([]);
+        coveredFillRef.current?.setPath([]);
 
-      fullRoadPathRef.current = combinedPath;
-      remainPolyRef.current?.setPath(combinedPath);
-      coveredBorderRef.current?.setPath([]);
-      coveredFillRef.current?.setPath([]);
-      setRouteErr('');
+        // Cache to Firestore so next load is instant
+        if (routeId && status === G.DirectionsStatus.OK) {
+          try {
+            const encoded = G.geometry.encoding.encodePath(path);
+            updateDoc(doc(db, 'routes', routeId), { encodedPolyline: encoded }).catch(() => {});
+          } catch { /* ignore */ }
+        }
+      },
+    );
 
-      // Cache encoded polyline in Firestore so next load is instant
-      if (routeId) {
-        try {
-          const encoded = G.geometry.encoding.encodePath(combinedPath);
-          updateDoc(doc(db, 'routes', routeId), { encodedPolyline: encoded }).catch(() => {});
-        } catch { /* ignore encode errors */ }
-      }
-    }
-
-    buildSegmentedPath();
     return () => { cancelled = true; };
   }, [isLoaded, routeStops, encodedPolyline, routeId]);
 
@@ -358,7 +363,7 @@ function MapContent({ busLocation, routeStops, routeId, encodedPolyline, routePa
     }
 
     // Animate marker + map centre together (both move in sync, icon on road)
-    animateMarkerAndMap(busMarkerRef.current, mapRef.current, targetLatLng, 5800, markerRafRef);
+    animateMarkerAndMap(busMarkerRef.current, mapRef.current, targetLatLng, 1800, markerRafRef);
 
     setInfoPos(snappedCur);
     setInfoData({ speed: busLocation.speed, status: busLocation.tripStatus });

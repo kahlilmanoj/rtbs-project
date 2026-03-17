@@ -3,7 +3,24 @@ import { useNavigate } from 'react-router-dom';
 import { getDocs, collection, query, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { useAuth } from '../context/AuthContext';
-import { ensureDemoData, seedDemoData, getTripHistory, clearRoutePolylineCache } from '../services/busService';
+import { ensureDemoData, seedDemoData, getTripHistory, clearRoutePolylineCache, addCustomRoute, removeBus } from '../services/busService';
+import { STOP_DB } from '../data/busStops';
+
+// Flat searchable list: base stops + every variant as a separate entry
+const ALL_STOPS = Object.values(STOP_DB).flatMap((stop) => {
+  const entries = [{ id: stop.id, name: stop.name, lat: stop.lat, lng: stop.lng }];
+  if (stop.variants) {
+    Object.entries(stop.variants).forEach(([variant, coords]) =>
+      entries.push({
+        id:   `${stop.id}_${variant}`,
+        name: `${stop.name} (${variant.charAt(0).toUpperCase() + variant.slice(1)})`,
+        lat:  coords.lat,
+        lng:  coords.lng,
+      }),
+    );
+  }
+  return entries;
+});
 
 export default function DriverDashboard() {
   const navigate = useNavigate();
@@ -23,6 +40,29 @@ export default function DriverDashboard() {
   const [seeding, setSeeding] = useState(false);
   const [seedMsg, setSeedMsg] = useState('');
   const [cacheMsg, setCacheMsg] = useState('');
+
+  // ── Editable profile fields ──
+  const [driverProfile, setDriverProfile] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('rtbs_driver_profile') || '{}'); }
+    catch { return {}; }
+  });
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [profileDraft, setProfileDraft] = useState({});
+
+  const startEditProfile = () => { setProfileDraft({ ...driverProfile }); setEditingProfile(true); };
+  const saveProfile = () => {
+    setDriverProfile(profileDraft);
+    localStorage.setItem('rtbs_driver_profile', JSON.stringify(profileDraft));
+    setEditingProfile(false);
+  };
+
+  // ── Add Route state ──
+  const EMPTY_FORM = { busNumber: '', routeName: '', busType: 'City Shuttle', fare: '', distance: '', duration: '', schedule: '06:00 AM' };
+  const [form,           setForm]           = useState(EMPTY_FORM);
+  const [selectedStops,  setSelectedStops]  = useState([]);
+  const [stopSearch,     setStopSearch]     = useState('');
+  const [addMsg,         setAddMsg]         = useState('');
+  const [addLoading,     setAddLoading]     = useState(false);
 
   // ── Fetch buses on mount ──
   useEffect(() => {
@@ -48,8 +88,7 @@ export default function DriverDashboard() {
         const routeMap = {};
         routeSnaps.forEach((snap) => {
           if (snap.exists()) {
-            // Exclude large route_polyline from dashboard display — not needed here
-            const { route_polyline, ...rest } = snap.data();
+            const { route_polyline, recordedPolyline, ...rest } = snap.data();
             routeMap[snap.id] = { id: snap.id, ...rest };
           }
         });
@@ -92,14 +131,27 @@ export default function DriverDashboard() {
       );
     }
 
+    const hour = new Date().getHours();
+    const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+    const displayName = driverProfile.name ? driverProfile.name.split(' ')[0] : user?.email?.split('@')[0];
+
     return (
-      <div style={{ paddingTop: 24 }}>
-        <h2 className="section-title">Your Assigned Buses</h2>
-        <p className="text-sm text-muted mb-16">
-          Logged in as <strong>{user?.email}</strong>
-        </p>
+      <div style={{ paddingTop: 20 }}>
+
+        {/* Greeting */}
+        <div style={{ marginBottom: 24 }}>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 2 }}>{greeting} 👋</p>
+          <h2 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>
+            Hi, {displayName}!
+          </h2>
+          <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginTop: 4 }}>
+            Ready to start your trip today?
+          </p>
+        </div>
 
         {error && <div className="error-message">{error}</div>}
+
+        <p className="input-label mb-12">Your Assigned Buses</p>
 
         {buses.length === 0 ? (
           <div className="empty-state">
@@ -275,35 +327,71 @@ export default function DriverDashboard() {
     <div style={{ paddingTop: 24 }}>
       <h2 className="section-title">Driver Profile</h2>
 
-      {/* Avatar */}
-      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 24 }}>
+      {/* Avatar row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
         <div style={{
-          width: 88,
-          height: 88,
+          width: 64,
+          height: 64,
           borderRadius: '50%',
           background: 'linear-gradient(135deg, #7b241c 0%, var(--primary) 100%)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          fontSize: 32,
+          fontSize: 22,
           fontWeight: 900,
           color: '#fff',
           boxShadow: '0 4px 16px rgba(192,57,43,0.3)',
-          letterSpacing: 1,
+          flexShrink: 0,
         }}>
-          {user?.email?.[0]?.toUpperCase() || '?'}
+          {driverProfile.name ? driverProfile.name.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2) : user?.email?.[0]?.toUpperCase() || '?'}
+        </div>
+        <div>
+          <p style={{ fontWeight: 700, fontSize: 17, color: 'var(--text-primary)', marginBottom: 3 }}>
+            {driverProfile.name || <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic', fontWeight: 400, fontSize: 14 }}>No name set</span>}
+          </p>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+            {driverProfile.phone || <span style={{ fontStyle: 'italic' }}>No phone set</span>}
+          </p>
         </div>
       </div>
 
       {/* Info card */}
       <div className="card info-panel" style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <span className="input-label" style={{ marginBottom: 0 }}>Profile</span>
+          {editingProfile ? (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => setEditingProfile(false)} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, padding: '3px 10px', cursor: 'pointer', color: 'var(--text-secondary)' }}>Cancel</button>
+              <button onClick={saveProfile} style={{ background: 'var(--primary)', border: 'none', borderRadius: 6, fontSize: 12, padding: '3px 10px', cursor: 'pointer', color: '#fff', fontWeight: 600 }}>Save</button>
+            </div>
+          ) : (
+            <button onClick={startEditProfile} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, padding: '3px 10px', cursor: 'pointer', color: 'var(--text-secondary)' }}>✏️ Edit</button>
+          )}
+        </div>
+
         <div className="info-row">
           <span className="info-label">Role</span>
           <span className="badge" style={{ background: '#fce4e4', color: '#c0392b' }}>Driver</span>
         </div>
         <div className="info-row">
+          <span className="info-label">Name</span>
+          {editingProfile ? (
+            <input value={profileDraft.name || ''} onChange={(e) => setProfileDraft((d) => ({ ...d, name: e.target.value }))} placeholder="Your name" style={{ border: '1px solid var(--border)', borderRadius: 6, padding: '4px 8px', fontSize: 13, width: 160, outline: 'none' }} />
+          ) : (
+            <span className="info-value" style={{ fontSize: 13 }}>{driverProfile.name || <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic' }}>Not set</span>}</span>
+          )}
+        </div>
+        <div className="info-row">
+          <span className="info-label">Phone</span>
+          {editingProfile ? (
+            <input value={profileDraft.phone || ''} onChange={(e) => setProfileDraft((d) => ({ ...d, phone: e.target.value }))} placeholder="+91 XXXXX XXXXX" type="tel" style={{ border: '1px solid var(--border)', borderRadius: 6, padding: '4px 8px', fontSize: 13, width: 160, outline: 'none' }} />
+          ) : (
+            <span className="info-value" style={{ fontSize: 13 }}>{driverProfile.phone || <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic' }}>Not set</span>}</span>
+          )}
+        </div>
+        <div className="info-row">
           <span className="info-label">Email</span>
-          <span className="info-value" style={{ fontSize: 14 }}>{user?.email}</span>
+          <span className="info-value" style={{ fontSize: 13 }}>{user?.email}</span>
         </div>
         <div className="info-row">
           <span className="info-label">Buses Assigned</span>
@@ -319,12 +407,26 @@ export default function DriverDashboard() {
       {buses.length > 0 && (
         <div className="card" style={{ marginBottom: 16 }}>
           <p className="input-label mb-12">Assigned Buses</p>
-          {buses.map((bus) => (
-            <div key={bus.id} className="info-row">
-              <span className="info-label" style={{ fontWeight: 700 }}>Bus {bus.busNumber}</span>
-              <span className="info-value" style={{ fontSize: 13 }}>
-                {routes[bus.routeId]?.name || bus.routeId}
-              </span>
+          {buses.map((bus, i) => (
+            <div key={bus.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0', borderBottom: i < buses.length - 1 ? '1px solid var(--border)' : 'none' }}>
+              <span style={{ fontWeight: 700, fontSize: 13, color: 'var(--primary)', whiteSpace: 'nowrap', minWidth: 64 }}>Bus {bus.busNumber}</span>
+              <span style={{ flex: 1, fontSize: 13, color: 'var(--text-secondary)' }}>{routes[bus.routeId]?.name || bus.routeId}</span>
+              <button
+                style={{ background: 'none', border: 'none', color: '#bbb', fontSize: 13, cursor: 'pointer', padding: '2px 4px', lineHeight: 1, flexShrink: 0 }}
+                title={`Remove Bus ${bus.busNumber}`}
+                aria-label={`Remove Bus ${bus.busNumber}`}
+                onClick={async () => {
+                  if (!window.confirm(`Remove Bus ${bus.busNumber} and its route? This cannot be undone.`)) return;
+                  try {
+                    await removeBus(bus.id, bus.routeId);
+                    setBuses((prev) => prev.filter((b) => b.id !== bus.id));
+                  } catch (e) {
+                    alert(`Failed to remove: ${e.message}`);
+                  }
+                }}
+              >
+                🗑️
+              </button>
             </div>
           ))}
         </div>
@@ -401,16 +503,175 @@ export default function DriverDashboard() {
         </button>
       </div>
 
-      <button className="btn btn-secondary mt-8" style={{ color: 'var(--danger)', borderColor: '#f5c6c6' }} onClick={handleLogout}>
-        🚪 Sign Out
-      </button>
     </div>
   );
+
+  /* ── Tab: Add Route ────────────────────────────────────────────────────── */
+  const renderAddRoute = () => {
+    const filteredStops = stopSearch.trim().length > 0
+      ? ALL_STOPS.filter((s) =>
+          s.name.toLowerCase().includes(stopSearch.toLowerCase()) &&
+          !selectedStops.find((sel) => sel.id === s.id),
+        ).slice(0, 8)
+      : [];
+
+    const moveStop = (idx, dir) => {
+      const arr = [...selectedStops];
+      const swap = idx + dir;
+      if (swap < 0 || swap >= arr.length) return;
+      [arr[idx], arr[swap]] = [arr[swap], arr[idx]];
+      setSelectedStops(arr);
+    };
+
+    const handleSubmit = async () => {
+      if (!form.busNumber.trim())         return setAddMsg('❌ Enter a bus number.');
+      if (!form.routeName.trim())         return setAddMsg('❌ Enter a route name.');
+      if (!form.fare || !form.distance)   return setAddMsg('❌ Enter fare and distance.');
+      if (selectedStops.length < 2)       return setAddMsg('❌ Add at least 2 stops.');
+
+      setAddLoading(true);
+      setAddMsg('');
+      try {
+        await addCustomRoute(
+          { ...form, stops: selectedStops },
+          user.email,
+        );
+        setAddMsg('✅ Route added! Refresh the Dashboard tab to see your new bus.');
+        setForm(EMPTY_FORM);
+        setSelectedStops([]);
+        setStopSearch('');
+      } catch (e) {
+        setAddMsg(`❌ ${e.message}`);
+      } finally {
+        setAddLoading(false);
+      }
+    };
+
+    const field = (label, key, props = {}) => (
+      <div style={{ marginBottom: 12 }}>
+        <label className="input-label">{label}</label>
+        <input
+          className="input-field"
+          value={form[key]}
+          onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
+          {...props}
+        />
+      </div>
+    );
+
+    return (
+      <div style={{ paddingTop: 24 }}>
+        <h2 className="section-title">Add New Route</h2>
+        <p className="text-sm text-muted mb-16">Create a bus and route — stops are resolved from the stop database automatically.</p>
+
+        {/* Bus details */}
+        <div className="card" style={{ marginBottom: 16 }}>
+          <p className="input-label mb-12">Bus Details</p>
+          {field('Bus Number', 'busNumber', { placeholder: 'e.g. MY-1' })}
+          {field('Route Name', 'routeName', { placeholder: 'e.g. City Shuttle - Thampanoor to Vattiyoorkavu' })}
+
+          <div style={{ marginBottom: 12 }}>
+            <label className="input-label">Bus Type</label>
+            <select
+              className="input-field"
+              value={form.busType}
+              onChange={(e) => setForm((f) => ({ ...f, busType: e.target.value }))}
+            >
+              {['City Circular (AC/Non-AC)', 'City Shuttle', 'City Radial', 'Express', 'Super Fast'].map((t) => (
+                <option key={t}>{t}</option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div>
+              <label className="input-label">Fare (₹)</label>
+              <input className="input-field" type="number" value={form.fare}     onChange={(e) => setForm((f) => ({ ...f, fare: e.target.value }))}     placeholder="30" />
+            </div>
+            <div>
+              <label className="input-label">Distance (km)</label>
+              <input className="input-field" type="number" value={form.distance} onChange={(e) => setForm((f) => ({ ...f, distance: e.target.value }))} placeholder="18" />
+            </div>
+            <div>
+              <label className="input-label">Duration (min)</label>
+              <input className="input-field" type="number" value={form.duration} onChange={(e) => setForm((f) => ({ ...f, duration: e.target.value }))} placeholder="55" />
+            </div>
+            <div>
+              <label className="input-label">Schedule</label>
+              <input className="input-field" value={form.schedule} onChange={(e) => setForm((f) => ({ ...f, schedule: e.target.value }))} placeholder="06:00 AM" />
+            </div>
+          </div>
+        </div>
+
+        {/* Stop picker */}
+        <div className="card" style={{ marginBottom: 16 }}>
+          <p className="input-label mb-12">Route Stops <span style={{ fontWeight: 400, color: 'var(--text-secondary)' }}>({selectedStops.length} added)</span></p>
+
+          <div style={{ position: 'relative', marginBottom: 12 }}>
+            <input
+              className="input-field"
+              placeholder="Search stop — e.g. Palayam, Kowdiar…"
+              value={stopSearch}
+              onChange={(e) => setStopSearch(e.target.value)}
+              style={{ marginBottom: 0 }}
+            />
+            {filteredStops.length > 0 && (
+              <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid var(--border)', borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.1)', zIndex: 100, maxHeight: 220, overflowY: 'auto' }}>
+                {filteredStops.map((stop) => (
+                  <button
+                    key={stop.id}
+                    type="button"
+                    style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', fontSize: 13, cursor: 'pointer', color: 'var(--text-primary)' }}
+                    onClick={() => {
+                      setSelectedStops((prev) => [...prev, stop]);
+                      setStopSearch('');
+                    }}
+                  >
+                    📍 {stop.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Selected stop list */}
+          {selectedStops.length === 0 ? (
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', textAlign: 'center', padding: '16px 0' }}>No stops added yet. Search above to add stops in order.</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {selectedStops.map((stop, i) => (
+                <div key={`${stop.id}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg-secondary)', borderRadius: 8, padding: '8px 10px' }}>
+                  <span style={{ width: 22, height: 22, borderRadius: '50%', background: i === 0 ? '#2e7d32' : i === selectedStops.length - 1 ? '#7b0000' : 'var(--primary)', color: '#fff', fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    {i + 1}
+                  </span>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{stop.name}</span>
+                  <button type="button" onClick={() => moveStop(i, -1)} disabled={i === 0}                         style={{ background: 'none', border: 'none', cursor: i === 0 ? 'default' : 'pointer', opacity: i === 0 ? 0.3 : 1, fontSize: 14, padding: '2px 4px' }}>↑</button>
+                  <button type="button" onClick={() => moveStop(i,  1)} disabled={i === selectedStops.length - 1} style={{ background: 'none', border: 'none', cursor: i === selectedStops.length - 1 ? 'default' : 'pointer', opacity: i === selectedStops.length - 1 ? 0.3 : 1, fontSize: 14, padding: '2px 4px' }}>↓</button>
+                  <button type="button" onClick={() => setSelectedStops((p) => p.filter((_, j) => j !== i))}      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--primary)', fontSize: 16, padding: '2px 4px', lineHeight: 1 }}>×</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {addMsg && (
+          <div className={`inline-banner ${addMsg.startsWith('✅') ? 'inline-banner-success' : 'inline-banner-error'}`} style={{ marginBottom: 12 }}>
+            {addMsg}
+          </div>
+        )}
+
+        <button className="btn btn-primary" onClick={handleSubmit} disabled={addLoading}>
+          {addLoading ? 'Adding…' : '✅ Add Bus & Route'}
+        </button>
+      </div>
+    );
+  };
 
   /* ── Render ────────────────────────────────────────────────────────────── */
   const tabContent = {
     dashboard: renderDashboard,
     history:   renderHistory,
+    add:       renderAddRoute,
     profile:   renderProfile,
   };
 
@@ -426,6 +687,13 @@ export default function DriverDashboard() {
           <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.7)', fontWeight: 500 }}>
             {user?.email?.split('@')[0]}
           </span>
+          <button
+            onClick={handleLogout}
+            style={{ background: 'rgba(255,255,255,0.15)', border: 'none', color: '#fff', fontSize: 12, fontWeight: 600, borderRadius: 6, padding: '4px 10px', cursor: 'pointer', marginLeft: 8 }}
+            aria-label="Sign out"
+          >
+            Sign Out
+          </button>
         </div>
       </header>
 
@@ -439,6 +707,7 @@ export default function DriverDashboard() {
         {[
           { key: 'dashboard', icon: '🚌', label: 'Dashboard' },
           { key: 'history',   icon: '📋', label: 'History'   },
+          { key: 'add',       icon: '➕', label: 'Add Route'  },
           { key: 'profile',   icon: '👤', label: 'Profile'   },
         ].map((tab) => (
           <button

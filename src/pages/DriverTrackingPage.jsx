@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { getBusRoute, updateBusLocation, startTrip, stopTrip, saveTripHistory } from '../services/busService';
+import { getBusRoute, updateBusLocation, startTrip, stopTrip, saveTripHistory, saveRawGpsPath } from '../services/busService';
 import { getDoc, doc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { haversineDistance } from '../utils/etaCalculator';
 
-const UPDATE_INTERVAL_MS = 6000;
+const UPDATE_INTERVAL_MS = 2000;  // fires every 2s; 3 steps = 6s per stop segment
 
 function randomSpeed(busType = '') {
   // Faster speed for express/superfast routes
@@ -32,10 +32,14 @@ export default function DriverTrackingPage() {
 
   const intervalRef        = useRef(null);
   const routeIndexRef      = useRef(0);
+  const subStepRef         = useRef(0);    // 0-2 within each stop segment (1/3, 2/3, 3/3)
   const distanceCoveredRef = useRef(0);
   const prevCoordsRef      = useRef(null);
   const startTimeRef       = useRef(new Date());
   const stopsRef           = useRef([]);   // live ref to stops array
+  const gpsRecordingRef    = useRef([]);   // raw GPS trace from device
+  const gpsWatchIdRef      = useRef(null); // geolocation watch handle
+  const routeIdRef         = useRef(null); // saved for GPS baking on trip end
 
   // ── Load bus + route data, then start simulation ───────────────────────────
   useEffect(() => {
@@ -69,13 +73,35 @@ export default function DriverTrackingPage() {
       await startTrip(busId);
       if (!mounted) return;
 
-      // 4. Start GPS simulation — walks through route stops, stops at destination
+      // 4. Record real device GPS for route baking (works silently alongside simulation)
+      routeIdRef.current = route.id;
+      if (navigator.geolocation) {
+        gpsWatchIdRef.current = navigator.geolocation.watchPosition(
+          (pos) => {
+            gpsRecordingRef.current.push({
+              lat: pos.coords.latitude,
+              lng: pos.coords.longitude,
+            });
+          },
+          null,
+          { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 },
+        );
+      }
+
+      // 5. Wait 2s then start GPS simulation
+      await new Promise((r) => setTimeout(r, 2000));
+      if (!mounted) return;
+
+      // Fires every 2s. Three firings = one full stop-to-stop segment (6s total).
+      // Sub-step 1 → bus at 1/3 of the way to next stop
+      // Sub-step 2 → bus at 2/3 of the way
+      // Sub-step 3 → bus arrives at next stop; index advances
       intervalRef.current = setInterval(async () => {
         const s       = stopsRef.current;
-        const nextIdx = routeIndexRef.current + 1;
+        const fromIdx = routeIndexRef.current;
+        const toIdx   = fromIdx + 1;
 
-        // Reached last stop — mark arrived, stop simulation
-        if (nextIdx >= s.length) {
+        if (toIdx >= s.length) {
           clearInterval(intervalRef.current);
           intervalRef.current = null;
           const last = s[s.length - 1];
@@ -84,24 +110,33 @@ export default function DriverTrackingPage() {
           return;
         }
 
-        routeIndexRef.current = nextIdx;
-        const next  = s[routeIndexRef.current];
+        subStepRef.current += 1;
+        const t    = subStepRef.current / 3;   // 1/3 · 2/3 · 1
+        const from = s[fromIdx];
+        const to   = s[toIdx];
+        const pos  = {
+          lat: from.lat + (to.lat - from.lat) * t,
+          lng: from.lng + (to.lng - from.lng) * t,
+        };
         const speed = randomSpeed(bus.busType);
 
-        const segDist = haversineDistance(
-          prevCoordsRef.current.lat, prevCoordsRef.current.lng,
-          next.lat, next.lng
-        );
-        distanceCoveredRef.current += segDist;
-        prevCoordsRef.current = next;
-
-        setCurrentCoords(next);
+        setCurrentCoords(pos);
         setCurrentSpeed(speed);
-        setDistanceCovered(distanceCoveredRef.current);
         setUpdateCount((c) => c + 1);
-        setRoutePointText(`${routeIndexRef.current + 1}/${s.length}`);
+        await updateBusLocation(busId, pos.lat, pos.lng, speed);
 
-        await updateBusLocation(busId, next.lat, next.lng, speed);
+        if (subStepRef.current >= 3) {
+          // Arrived at next stop — reset sub-step, advance stop index
+          subStepRef.current    = 0;
+          routeIndexRef.current = toIdx;
+
+          const segDist = haversineDistance(from.lat, from.lng, to.lat, to.lng);
+          distanceCoveredRef.current += segDist;
+          prevCoordsRef.current = to;
+
+          setDistanceCovered(distanceCoveredRef.current);
+          setRoutePointText(`${toIdx + 1}/${s.length}`);
+        }
       }, UPDATE_INTERVAL_MS);
     }
 
@@ -109,6 +144,9 @@ export default function DriverTrackingPage() {
     return () => {
       mounted = false;
       if (intervalRef.current) clearInterval(intervalRef.current);
+      if (gpsWatchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(gpsWatchIdRef.current);
+      }
     };
   }, [busId]);
 
@@ -117,6 +155,16 @@ export default function DriverTrackingPage() {
     setStopping(true);
     clearInterval(intervalRef.current);
     intervalRef.current = null;
+
+    // Stop GPS recording and save if we captured enough real points
+    if (gpsWatchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(gpsWatchIdRef.current);
+      gpsWatchIdRef.current = null;
+    }
+    if (gpsRecordingRef.current.length >= 20 && routeIdRef.current) {
+      saveRawGpsPath(routeIdRef.current, gpsRecordingRef.current).catch(() => {});
+    }
+
     await stopTrip(busId);
 
     try {

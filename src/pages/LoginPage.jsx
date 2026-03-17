@@ -115,7 +115,7 @@ export default function LoginPage() {
         {/* Role label */}
         <p className="role-hint">
           {isDriver
-            ? 'Sign in to start your trip and share live location'
+            ? 'Sign in to start your trip & share live location'
             : 'Sign in to search buses and track live arrivals'}
         </p>
 
@@ -166,36 +166,6 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {/* Quick fill demo creds */}
-        <button
-          type="button"
-          className="btn btn-secondary mt-8"
-          style={{ fontSize: 13 }}
-          onClick={fillDemo}
-        >
-          Use Demo {isDriver ? 'Driver' : 'Passenger'} Account
-        </button>
-
-        <hr className="divider" />
-
-        <details style={{ marginBottom: 0 }}>
-          <summary style={{ fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px 0', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span>⚙️</span>
-            <span>First time? Setup demo data</span>
-          </summary>
-          <div style={{ marginTop: 10 }}>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              style={{ fontSize: 13 }}
-              onClick={handleSeedData}
-              disabled={seedLoading}
-            >
-              {seedLoading ? 'Setting up…' : 'Initialise Demo Routes &amp; Buses'}
-            </button>
-            <p className="seed-note">Run once to load demo data into Firebase</p>
-          </div>
-        </details>
       </div>
     </div>
   );

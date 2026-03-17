@@ -63,6 +63,22 @@ export default function PassengerHome() {
   const [toStop, setToStop]       = useState('');
   const [activeNav, setActiveNav] = useState('home');
   const [routeFilter, setRouteFilter] = useState('');
+  const [showAllTrips, setShowAllTrips] = useState(false);
+
+  // Editable profile fields
+  const [profile, setProfile] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('rtbs_passenger_profile') || '{}'); }
+    catch { return {}; }
+  });
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [profileDraft, setProfileDraft] = useState({});
+
+  const startEditProfile = () => { setProfileDraft({ ...profile }); setEditingProfile(true); };
+  const saveProfile = () => {
+    setProfile(profileDraft);
+    localStorage.setItem('rtbs_passenger_profile', JSON.stringify(profileDraft));
+    setEditingProfile(false);
+  };
 
   // Auto-seed Firestore demo data if the buses collection is empty
   useEffect(() => { ensureDemoData(); }, []);
@@ -115,13 +131,26 @@ export default function PassengerHome() {
 
   /* ── Render helpers ──────────────────────────────────────────────────────── */
 
-  const renderHome = () => (
-    <div style={{ paddingTop: 24 }}>
-      <h2 className="section-title">Find Your Bus</h2>
-      <p className="text-sm text-muted mb-16">
-        Enter your pickup and drop-off stop to see available buses.
-      </p>
+  const renderHome = () => {
+    const hour = new Date().getHours();
+    const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+    const displayName = profile.name ? profile.name.split(' ')[0] : user?.email?.split('@')[0];
 
+    return (
+    <div style={{ paddingTop: 20 }}>
+
+      {/* Greeting */}
+      <div style={{ marginBottom: 24 }}>
+        <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 2 }}>{greeting} 👋</p>
+        <h2 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>
+          Hi, {displayName}!
+        </h2>
+        <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginTop: 4 }}>
+          Where do you want to travel today?
+        </p>
+      </div>
+
+      {/* Search card */}
       <form onSubmit={handleSearch} className="search-card card">
         <label className="input-label" htmlFor="from-stop">From</label>
         <input
@@ -135,7 +164,6 @@ export default function PassengerHome() {
           autoComplete="off"
         />
 
-        {/* Swap stops button */}
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 4 }}>
           <button
             type="button"
@@ -165,7 +193,7 @@ export default function PassengerHome() {
         </button>
       </form>
 
-      {/* Quick-search suggestions */}
+      {/* Popular Routes */}
       <div className="card">
         <p className="input-label mb-8">Popular Routes</p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -189,7 +217,8 @@ export default function PassengerHome() {
         </div>
       </div>
     </div>
-  );
+    );
+  };
 
   const renderRoutes = () => {
     const filtered = routeFilter.trim()
@@ -351,44 +380,125 @@ export default function PassengerHome() {
     </div>
   );
 
+  const pastTrips = (() => {
+    try { return JSON.parse(localStorage.getItem('rtbs_past_trips') || '[]'); }
+    catch { return []; }
+  })();
+
   const renderProfile = () => (
     <div style={{ paddingTop: 24 }}>
       <h2 className="section-title">My Profile</h2>
 
-      {/* Avatar */}
-      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 24 }}>
+      {/* Avatar row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
         <div style={{
-          width: 80,
-          height: 80,
+          width: 64,
+          height: 64,
           borderRadius: '50%',
           background: 'linear-gradient(135deg, var(--primary) 0%, #922b21 100%)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          fontSize: 28,
+          fontSize: 22,
           fontWeight: 900,
           color: '#fff',
           boxShadow: '0 4px 16px rgba(192,57,43,0.3)',
-          letterSpacing: 1,
+          flexShrink: 0,
         }}>
-          {user?.email?.[0]?.toUpperCase() || '?'}
+          {profile.name ? profile.name.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2) : user?.email?.[0]?.toUpperCase() || '?'}
+        </div>
+        <div>
+          <p style={{ fontWeight: 700, fontSize: 17, color: 'var(--text-primary)', marginBottom: 3 }}>
+            {profile.name || <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic', fontWeight: 400, fontSize: 14 }}>No name set</span>}
+          </p>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+            {profile.phone || <span style={{ fontStyle: 'italic' }}>No phone set</span>}
+          </p>
         </div>
       </div>
 
       {/* Info card */}
       <div className="card info-panel" style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <span className="input-label" style={{ marginBottom: 0 }}>Profile</span>
+          {editingProfile ? (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => setEditingProfile(false)} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, padding: '3px 10px', cursor: 'pointer', color: 'var(--text-secondary)' }}>Cancel</button>
+              <button onClick={saveProfile} style={{ background: 'var(--primary)', border: 'none', borderRadius: 6, fontSize: 12, padding: '3px 10px', cursor: 'pointer', color: '#fff', fontWeight: 600 }}>Save</button>
+            </div>
+          ) : (
+            <button onClick={startEditProfile} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, padding: '3px 10px', cursor: 'pointer', color: 'var(--text-secondary)' }}>✏️ Edit</button>
+          )}
+        </div>
+
         <div className="info-row">
           <span className="info-label">Role</span>
           <span className="badge badge-active">Passenger</span>
         </div>
         <div className="info-row">
+          <span className="info-label">Name</span>
+          {editingProfile ? (
+            <input value={profileDraft.name || ''} onChange={(e) => setProfileDraft((d) => ({ ...d, name: e.target.value }))} placeholder="Your name" style={{ border: '1px solid var(--border)', borderRadius: 6, padding: '4px 8px', fontSize: 13, width: 160, outline: 'none' }} />
+          ) : (
+            <span className="info-value" style={{ fontSize: 13 }}>{profile.name || <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic' }}>Not set</span>}</span>
+          )}
+        </div>
+        <div className="info-row">
+          <span className="info-label">Phone</span>
+          {editingProfile ? (
+            <input value={profileDraft.phone || ''} onChange={(e) => setProfileDraft((d) => ({ ...d, phone: e.target.value }))} placeholder="+91 XXXXX XXXXX" type="tel" style={{ border: '1px solid var(--border)', borderRadius: 6, padding: '4px 8px', fontSize: 13, width: 160, outline: 'none' }} />
+          ) : (
+            <span className="info-value" style={{ fontSize: 13 }}>{profile.phone || <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic' }}>Not set</span>}</span>
+          )}
+        </div>
+        <div className="info-row">
           <span className="info-label">Email</span>
-          <span className="info-value" style={{ fontSize: 14 }}>{user?.email}</span>
+          <span className="info-value" style={{ fontSize: 13 }}>{user?.email}</span>
         </div>
         <div className="info-row">
           <span className="info-label">Saved Routes</span>
           <span className="info-value">{favourites.length}</span>
         </div>
+      </div>
+
+      {/* Past trips */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <p className="input-label mb-12">Past Trips</p>
+        {pastTrips.length === 0 ? (
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', textAlign: 'center', padding: '8px 0' }}>
+            No trips yet — track a bus to record your first trip.
+          </p>
+        ) : (
+          <>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+              {(showAllTrips ? pastTrips : pastTrips.slice(0, 3)).map((trip, i, arr) => {
+                const d = new Date(trip.timestamp);
+                const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                const date = d.toLocaleDateString([], { day: 'numeric', month: 'short' });
+                return (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: i < arr.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{ width: 36, height: 36, borderRadius: 10, background: '#fce4e4', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>🚌</div>
+                      <div>
+                        <p style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>Bus {trip.busNumber}</p>
+                        <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 1 }}>{date} · {time}</p>
+                      </div>
+                    </div>
+                    <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--primary)' }}>₹{trip.fare ?? '—'}</span>
+                  </div>
+                );
+              })}
+            </div>
+            {pastTrips.length > 3 && (
+              <button
+                onClick={() => setShowAllTrips((v) => !v)}
+                style={{ marginTop: 10, background: 'none', border: 'none', color: 'var(--primary)', fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: '4px 0', width: '100%', textAlign: 'center' }}
+              >
+                {showAllTrips ? '▲ Show less' : `▼ View all ${pastTrips.length} trips`}
+              </button>
+            )}
+          </>
+        )}
       </div>
 
       {/* App info */}
@@ -403,9 +513,6 @@ export default function PassengerHome() {
         </p>
       </div>
 
-      <button className="btn btn-secondary mt-8" style={{ color: 'var(--danger)', borderColor: '#f5c6c6' }} onClick={handleLogout}>
-        🚪 Sign Out
-      </button>
     </div>
   );
 
@@ -428,6 +535,13 @@ export default function PassengerHome() {
           <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.7)', fontWeight: 500 }}>
             {user?.email?.split('@')[0]}
           </span>
+          <button
+            onClick={handleLogout}
+            style={{ background: 'rgba(255,255,255,0.15)', border: 'none', color: '#fff', fontSize: 12, fontWeight: 600, borderRadius: 6, padding: '4px 10px', cursor: 'pointer', marginLeft: 8 }}
+            aria-label="Sign out"
+          >
+            Sign Out
+          </button>
         </div>
       </header>
 
